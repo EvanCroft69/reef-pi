@@ -1,3 +1,4 @@
+// front-end/src/autotester/main.jsx
 import React, { useState, useEffect } from 'react'
 import Chart from './chart'
 
@@ -40,17 +41,20 @@ export default function AutoTester() {
   }, [])
 
   // 2) Poll status every 2s
-  useEffect(() => {
-    const iv = setInterval(() => {
-      PARAMS.forEach(({ key }) => {
-        fetch(`/api/autotester/status/${key}`, { credentials: 'include' })
-          .then(r => r.json())
-          .then(js => setStat(s => ({ ...s, [key]: js.status })))
-      })
-    }, 2000)
-    return () => clearInterval(iv)
-  }, [])
-
+  const iv = setInterval(async () => {
+         for (const { key } of PARAMS) {
+           const js = await fetch(`/api/autotester/status/${key}`, { credentials: 'include' })
+                           .then(r => r.json());
+           setStat(s => ({ ...s, [key]: js.status }));
+           // when it flips back to 0 (idle), re-load that parameter’s history
+           if (js.status === 0) {
+             const arr = await fetch(`/api/autotester/results/${key}`, { credentials: 'include' })
+                             .then(r => r.json());
+             setData(d => ({ ...d, [key]: arr }));
+           }
+         }
+       }, 2000);
+       
   // 3) Load history once and whenever cfg changes
   useEffect(() => {
     PARAMS.forEach(({ key }) => {
@@ -116,18 +120,10 @@ export default function AutoTester() {
                 }}
               >
                 <option value="">Disabled</option>
-                <option value="FREQ=HOURLY;INTERVAL=4">
-                  Every 4 hours
-                </option>
-                <option value="FREQ=HOURLY;INTERVAL=8">
-                  Every 8 hours
-                </option>
-                <option value="FREQ=HOURLY;INTERVAL=12">
-                  Every 12 hours
-                </option>
-                <option value="FREQ=DAILY;INTERVAL=1">
-                  Every 24 hours
-                </option>
+                <option value="FREQ=HOURLY;INTERVAL=4">Every 4 hours</option>
+                <option value="FREQ=HOURLY;INTERVAL=8">Every 8 hours</option>
+                <option value="FREQ=HOURLY;INTERVAL=12">Every 12 hours</option>
+                <option value="FREQ=DAILY;INTERVAL=1">Every 24 hours</option>
               </select>
             </div>
 
@@ -154,7 +150,7 @@ export default function AutoTester() {
               Calibrate {p.label}
             </button>
 
-            {/* Status */}
+            {/* Status indicator */}
             <span className="ml-3">
               {stat[p.key] === 0 && 'Idle'}
               {stat[p.key] === 1 && <><i className="fa fa-spinner fa-spin" /> Running</>}
@@ -163,8 +159,17 @@ export default function AutoTester() {
 
             <hr />
 
-            {/* Chart */}
-            <Chart param={p.key} label={p.label} unit={p.unit} height={200} />
+            {/* Only show chart if we have data, otherwise placeholder */}
+            {Array.isArray(data[p.key]) && data[p.key].length > 0 ? (
+              <Chart
+                data={data[p.key]}
+                label={p.label}
+                unit={p.unit}
+                height={200}
+              />
+            ) : (
+              <div className="text-muted">Perform a test to see data</div>
+            )}
           </div>
         </div>
       ))}

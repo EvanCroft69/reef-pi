@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt" // for error wrapping
 	"math"
+	"math/rand"
 	"net/http"
 	"time"
 
@@ -24,7 +25,7 @@ const (
 type Config struct {
 	ID      string `json:"id"`
 	Enable  bool   `json:"enable"`
-	I2CAddr byte   `json:"i2c_addr"` // e.g. 0x10
+	I2CAddr byte   `json:"i2c_addr"`
 
 	EnableCa  bool `json:"enable_ca"`
 	EnableAlk bool `json:"enable_alk"`
@@ -39,7 +40,7 @@ type Config struct {
 	SchedulePo4 string `json:"schedule_po4"`
 }
 
-// Controller implements controller.Subsystem.
+// Controller implements controller.Subsystem and manages scheduling, I²C comms, and storage.
 type Controller struct {
 	c        controller.Controller
 	bus      i2c.Bus
@@ -47,9 +48,8 @@ type Controller struct {
 	quitters map[string]chan struct{}
 }
 
-// New constructs the Auto-Tester subsystem.
+// New constructs the Auto-Tester subsystem and ensures our buckets exist.
 func New(devMode bool, c controller.Controller) (*Controller, error) {
-	// Ensure our buckets exist
 	if err := c.Store().CreateBucket(configBucket); err != nil {
 		return nil, err
 	}
@@ -88,7 +88,7 @@ func (m *Controller) Setup() error {
 	return nil
 }
 
-// Start reads the config and spins up one scheduler per enabled parameter.
+// Start reads the config and spawns one scheduler per enabled parameter.
 func (m *Controller) Start() {
 	cfg, err := m.Get("default")
 	if err != nil {
@@ -129,7 +129,6 @@ func (m *Controller) scheduleLoop(
 	key string, addr, opcode byte,
 	ruleStr string, quit chan struct{},
 ) {
-	// Build an rrule with DTSTART=now + user rule string
 	rr, err := rrule.StrToRRule(
 		"DTSTART=" +
 			time.Now().UTC().Format("20060102T150405Z") +
@@ -150,32 +149,44 @@ func (m *Controller) scheduleLoop(
 	}
 }
 
-// runTest does: START, poll GET_STATUS, READ_RESULT, and store the float32 result.
+// runTest sends START, polls GET_STATUS, issues READ_RESULT, and stores the float32 reading.
 func (m *Controller) runTest(key string, addr, opcode byte) {
-	// 1) Send START opcode
+	// 1) START
 	if err := m.bus.WriteBytes(addr, []byte{opcode}); err != nil {
 		m.c.LogError("autotester", key+": start error "+err.Error())
 		return
+
 	}
-	// 2) Poll until idle or error
+
+	if m.devMode {
+		fake := float32(rand.Float32()*10.0 + 5.0) // e.g. between 5 and 15
+		rec := struct {
+			ID    string  `json:"id"`
+			Param string  `json:"param"`
+			Time  int64   `json:"ts"`
+			Value float32 `json:"value"`
+		}{Param: key, Time: time.Now().Unix(), Value: fake}
+		fn := func(id string) interface{} { rec.ID = id; return &rec }
+		_ = m.c.Store().Create(resultsBucket, fn)
+		return
+	}
+
+	// 2) Poll status
 	for {
 		time.Sleep(500 * time.Millisecond)
-		m.bus.WriteBytes(addr, []byte{0x31}) // GET_STATUS
+		m.bus.WriteBytes(addr, []byte{0x31})
 		st, err := m.bus.ReadBytes(addr, 1)
 		if err != nil {
 			m.c.LogError("autotester", key+": status read err "+err.Error())
 			return
 		}
-		switch st[0] {
-		case 0: // idle
+		if st[0] == 0 /* idle */ {
 			break
-		case 2: // error
+		}
+		if st[0] == 2 /* error */ {
 			m.c.LogError("autotester", key+": device error")
 			return
-		default: // busy
-			continue
 		}
-		break
 	}
 	// 3) READ_RESULT
 	m.bus.WriteBytes(addr, []byte{0x32})
@@ -185,7 +196,7 @@ func (m *Controller) runTest(key string, addr, opcode byte) {
 		return
 	}
 	value := math.Float32frombits(binary.LittleEndian.Uint32(data))
-	// 4) Store in BoltDB
+	// 4) Store record
 	rec := struct {
 		ID    string  `json:"id"`
 		Param string  `json:"param"`
@@ -198,7 +209,7 @@ func (m *Controller) runTest(key string, addr, opcode byte) {
 	}
 }
 
-// LoadAPI mounts all of the REST handlers under /api/autotester.
+// LoadAPI mounts all REST handlers under /api/autotester.
 func (m *Controller) LoadAPI(r *mux.Router) {
 	sr := r.PathPrefix("/api/autotester").Subrouter()
 	sr.HandleFunc("/config", m.getConfig).Methods("GET")
@@ -247,6 +258,13 @@ func (m *Controller) calibrateOne(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *Controller) statusOne(w http.ResponseWriter, r *http.Request) {
+
+	if m.devMode {
+		// immediately report “idle” so the UI can move off Running
+		json.NewEncoder(w).Encode(map[string]int{"status": 0})
+		return
+	}
+
 	addr := m.getConfigI2C()
 	m.bus.WriteBytes(addr, []byte{0x31})
 	st, err := m.bus.ReadBytes(addr, 1)
@@ -279,7 +297,7 @@ func (m *Controller) resultsOne(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(out)
 }
 
-// getConfigI2C returns the saved I²C addr, falling back to 0x10.
+// getConfigI2C returns the saved I²C addr, defaulting to 0x10 on error.
 func (m *Controller) getConfigI2C() byte {
 	cfg, err := m.Get("default")
 	if err != nil {
