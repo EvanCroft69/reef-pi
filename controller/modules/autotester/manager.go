@@ -3,7 +3,7 @@ package autotester
 import (
 	"encoding/binary"
 	"encoding/json"
-
+	"fmt" // for error wrapping
 	"math"
 	"net/http"
 	"time"
@@ -32,7 +32,7 @@ type Config struct {
 	EnableNo3 bool `json:"enable_no3"`
 	EnablePo4 bool `json:"enable_po4"`
 
-	ScheduleCa  string `json:"schedule_ca"` // RRULE e.g. FREQ=DAILY;BYHOUR=6
+	ScheduleCa  string `json:"schedule_ca"`
 	ScheduleAlk string `json:"schedule_alk"`
 	ScheduleMg  string `json:"schedule_mg"`
 	ScheduleNo3 string `json:"schedule_no3"`
@@ -49,26 +49,44 @@ type Controller struct {
 
 // New constructs the Auto-Tester subsystem.
 func New(devMode bool, c controller.Controller) (*Controller, error) {
+	// Ensure our buckets exist
 	if err := c.Store().CreateBucket(configBucket); err != nil {
 		return nil, err
 	}
 	if err := c.Store().CreateBucket(resultsBucket); err != nil {
 		return nil, err
 	}
-	bus, err := i2c.New() // opens /dev/i2c-1
+	bus, err := i2c.New()
 	if err != nil {
 		return nil, err
 	}
-	return &Controller{
-		c:        c,
-		bus:      bus,
-		devMode:  devMode,
-		quitters: make(map[string]chan struct{}),
-	}, nil
+	return &Controller{c: c, bus: bus, devMode: devMode, quitters: make(map[string]chan struct{})}, nil
 }
 
-// Setup is called once at startup; no special action here.
-func (m *Controller) Setup() error { return nil }
+// Setup bootstraps a default config so GET /config never 404s.
+func (m *Controller) Setup() error {
+	if _, err := m.Get("default"); err != nil {
+		defaultCfg := Config{
+			ID:          "default",
+			I2CAddr:     0x10,
+			Enable:      false,
+			EnableCa:    false,
+			EnableAlk:   false,
+			EnableMg:    false,
+			EnableNo3:   false,
+			EnablePo4:   false,
+			ScheduleCa:  "",
+			ScheduleAlk: "",
+			ScheduleMg:  "",
+			ScheduleNo3: "",
+			SchedulePo4: "",
+		}
+		if err := m.CreateOrUpdate(defaultCfg); err != nil {
+			return fmt.Errorf("autotester: bootstrap default config: %w", err)
+		}
+	}
+	return nil
+}
 
 // Start reads the config and spins up one scheduler per enabled parameter.
 func (m *Controller) Start() {

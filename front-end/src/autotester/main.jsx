@@ -1,5 +1,5 @@
-// front-end/src/autotester/main.jsx
 import React, { useState, useEffect } from 'react'
+import Chart from './chart'
 
 const PARAMS = [
   { key: 'ca',  label: 'Calcium',    unit: 'ppm' },
@@ -9,21 +9,38 @@ const PARAMS = [
   { key: 'po4', label: 'Phosphate',  unit: 'ppm', stub: true },
 ]
 
-export default function AutoTester() {
-  const [cfg,  setCfg]  = useState(null)
-  const [stat, setStat] = useState({})
-  const [data, setData]  = useState({})
+// Must match the Go-side default in Setup()
+const DEFAULT_CFG = {
+  id:           'default',
+  enable:       false,
+  i2c_addr:     0x10,
+  enable_ca:    false,
+  enable_alk:   false,
+  enable_mg:    false,
+  enable_no3:   false,
+  enable_po4:   false,
+  schedule_ca:  '',
+  schedule_alk: '',
+  schedule_mg:  '',
+  schedule_no3: '',
+  schedule_po4: '',
+}
 
-  // Load config on mount
+export default function AutoTester() {
+  const [cfg,  setCfg]  = useState(DEFAULT_CFG)
+  const [stat, setStat] = useState({})
+  const [data, setData] = useState({})
+
+  // 1) Fetch real config and overwrite defaults
   useEffect(() => {
     fetch('/api/autotester/config', { credentials: 'include' })
-      .then(r => r.json())
+      .then(r => r.ok ? r.json() : Promise.reject())
       .then(setCfg)
+      .catch(() => setCfg(DEFAULT_CFG))
   }, [])
 
-  // Poll status every 2s
+  // 2) Poll status every 2s
   useEffect(() => {
-    if (!cfg) return
     const iv = setInterval(() => {
       PARAMS.forEach(({ key }) => {
         fetch(`/api/autotester/status/${key}`, { credentials: 'include' })
@@ -32,11 +49,10 @@ export default function AutoTester() {
       })
     }, 2000)
     return () => clearInterval(iv)
-  }, [cfg])
+  }, [])
 
-  // Load history on cfg change
+  // 3) Load history once and whenever cfg changes
   useEffect(() => {
-    if (!cfg) return
     PARAMS.forEach(({ key }) => {
       fetch(`/api/autotester/results/${key}`, { credentials: 'include' })
         .then(r => r.json())
@@ -44,10 +60,8 @@ export default function AutoTester() {
     })
   }, [cfg])
 
-  if (!cfg) return <div>Loading Auto Tester…</div>
-
-  // Update config on server
-  const updateConfig = (newCfg) => {
+  // 4) Handlers
+  const updateConfig = newCfg => {
     fetch('/api/autotester/config', {
       method: 'PUT',
       credentials: 'include',
@@ -56,7 +70,6 @@ export default function AutoTester() {
     }).then(() => setCfg(newCfg))
   }
 
-  // Run a single test
   const runTest = key => {
     fetch(`/api/autotester/run/${key}`, {
       method: 'POST',
@@ -65,7 +78,6 @@ export default function AutoTester() {
     setStat(s => ({ ...s, [key]: 1 }))
   }
 
-  // Calibrate pump or test
   const calibrate = key => {
     fetch(`/api/autotester/calibrate/${key}`, {
       method: 'POST',
@@ -91,11 +103,10 @@ export default function AutoTester() {
             />
           </div>
           <div className="card-body">
-            {/* Schedule field */}
+            {/* Schedule picker */}
             <div className="form-group">
-              <label>Schedule (RRULE):</label>
-              <input
-                type="text"
+              <label>Schedule:</label>
+              <select
                 className="form-control"
                 value={cfg[`schedule_${p.key}`] || ''}
                 disabled={!cfg[`enable_${p.key}`] || stat[p.key] === 1}
@@ -103,7 +114,21 @@ export default function AutoTester() {
                   const c = { ...cfg, [`schedule_${p.key}`]: e.target.value }
                   updateConfig(c)
                 }}
-              />
+              >
+                <option value="">Disabled</option>
+                <option value="FREQ=HOURLY;INTERVAL=4">
+                  Every 4 hours
+                </option>
+                <option value="FREQ=HOURLY;INTERVAL=8">
+                  Every 8 hours
+                </option>
+                <option value="FREQ=HOURLY;INTERVAL=12">
+                  Every 12 hours
+                </option>
+                <option value="FREQ=DAILY;INTERVAL=1">
+                  Every 24 hours
+                </option>
+              </select>
             </div>
 
             {/* Action buttons */}
@@ -129,7 +154,7 @@ export default function AutoTester() {
               Calibrate {p.label}
             </button>
 
-            {/* Status indicator */}
+            {/* Status */}
             <span className="ml-3">
               {stat[p.key] === 0 && 'Idle'}
               {stat[p.key] === 1 && <><i className="fa fa-spinner fa-spin" /> Running</>}
@@ -138,12 +163,8 @@ export default function AutoTester() {
 
             <hr />
 
-            {/* Historical data table (placeholder) */}
-            <div style={{ maxHeight: '200px', overflowY: 'scroll' }}>
-              {(data[p.key] || []).map((rec, i) => (
-                <div key={i}>{new Date(rec.ts * 1000).toLocaleString()}: {rec.value} {p.unit}</div>
-              ))}
-            </div>
+            {/* Chart */}
+            <Chart param={p.key} label={p.label} unit={p.unit} height={200} />
           </div>
         </div>
       ))}
