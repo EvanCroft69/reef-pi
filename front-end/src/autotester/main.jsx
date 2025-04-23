@@ -18,18 +18,18 @@ export default function AutoTester() {
 
   return (
     <div className="container mt-4">
-      <h2>Auto Tester POC</h2>
+      <h2>Auto Tester</h2>
       <button
         className="btn btn-primary mr-2"
         onClick={() => poke('on')}
       >
-        LED On
+        Love Yourself
       </button>
       <button
         className="btn btn-secondary"
         onClick={() => poke('off')}
       >
-        LED Off
+        Kill Yourself
       </button>
     </div>
   )
