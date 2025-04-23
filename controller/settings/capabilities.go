@@ -2,6 +2,7 @@ package settings
 
 //swagger:model capabilities
 type Capabilities struct {
+	AutoTester    bool `json:"autotester" yaml:"autotester"`
 	DevMode       bool `json:"dev_mode"`
 	Dashboard     bool `json:"dashboard"`
 	HealthCheck   bool `json:"health_check"`
@@ -19,6 +20,7 @@ type Capabilities struct {
 }
 
 var DefaultCapabilities = Capabilities{
+	AutoTester:    true,
 	DevMode:       false,
 	Dashboard:     true,
 	HealthCheck:   true,
